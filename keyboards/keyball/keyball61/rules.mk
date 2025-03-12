@@ -1,16 +1,16 @@
 # MCU name
-MCU = atmega32u4
+MCU = RP2040
 
 # Bootloader selection
-BOOTLOADER = caterina
+BOOTLOADER = rp2040
 
 # Link Time Optimization required for size.
-LTO_ENABLE = yes
+LTO_ENABLE = no
 
 # Build Options
 BOOTMAGIC_ENABLE = no       # Enable Bootmagic Lite
-EXTRAKEY_ENABLE = no        # Audio control and System control
-CONSOLE_ENABLE = no         # Console for debug
+EXTRAKEY_ENABLE = yes       # Audio control and System control
+CONSOLE_ENABLE = yes         # Console for debug
 COMMAND_ENABLE = no         # Commands for debug and configuration
 NKRO_ENABLE = no            # Enable N-Key Rollover
 BACKLIGHT_ENABLE = no       # Enable keyboard backlight functionality
@@ -25,8 +25,8 @@ SPLIT_KEYBOARD = yes
 
 # Optical sensor driver for trackball.
 POINTING_DEVICE_ENABLE = yes
-POINTING_DEVICE_DRIVER = custom
-SRC += drivers/pmw3360/pmw3360.c
+POINTING_DEVICE_DRIVER = pmw3360
+# SRC += drivers/pmw3360/pmw3360.c
 QUANTUM_LIB_SRC += spi_master.c # Optical sensor use SPI to communicate
 
 # This is unnecessary for processing KC_MS_BTN*.
@@ -51,3 +51,7 @@ SRC += lib/keyball/keyball.c
 SPACE_CADET_ENABLE = no
 GRAVE_ESC_ENABLE = no
 MAGIC_ENABLE = no
+
+# RP2040 configurations
+WS2812_DRIVER = vendor
+SERIAL_DRIVER = vendor

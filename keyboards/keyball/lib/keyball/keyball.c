@@ -21,12 +21,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #endif
 
 #include "keyball.h"
-#include "drivers/pmw3360/pmw3360.h"
+// #include "drivers/pmw3360/pmw3360.h"
 
 #include <string.h>
 
 const uint8_t CPI_DEFAULT    = KEYBALL_CPI_DEFAULT / 100;
-const uint8_t CPI_MAX        = pmw3360_MAXCPI + 1;
+const uint8_t CPI_MAX        = 120;
 const uint8_t SCROLL_DIV_MAX = 7;
 
 const uint16_t AML_TIMEOUT_MIN = 100;
@@ -34,8 +34,10 @@ const uint16_t AML_TIMEOUT_MAX = 1000;
 const uint16_t AML_TIMEOUT_QU  = 50;   // Quantization Unit
 
 static const char BL = '\xB0'; // Blank indicator character
+#ifdef OLED_ENABLE
 static const char LFSTR_ON[] PROGMEM = "\xB2\xB3";
 static const char LFSTR_OFF[] PROGMEM = "\xB4\xB5";
+#endif
 
 keyball_t keyball = {
     .this_have_ball = false,
@@ -133,37 +135,42 @@ static void add_scroll_div(int8_t delta) {
 //////////////////////////////////////////////////////////////////////////////
 // Pointing device driver
 
-#if KEYBALL_MODEL == 46
-void keyboard_pre_init_kb(void) {
-    keyball.this_have_ball = pmw3360_init();
-    keyboard_pre_init_user();
-}
-#endif
+// #if KEYBALL_MODEL == 46
+// void keyboard_pre_init_kb(void) {
+//     keyball.this_have_ball = pmw3360_init();
+//     keyboard_pre_init_user();
+// }
+// #endif
 
-void pointing_device_driver_init(void) {
-#if KEYBALL_MODEL != 46
-    keyball.this_have_ball = pmw3360_init();
-#endif
-    if (keyball.this_have_ball) {
-#if defined(KEYBALL_PMW3360_UPLOAD_SROM_ID)
-#    if KEYBALL_PMW3360_UPLOAD_SROM_ID == 0x04
-        pmw3360_srom_upload(pmw3360_srom_0x04);
-#    elif KEYBALL_PMW3360_UPLOAD_SROM_ID == 0x81
-        pmw3360_srom_upload(pmw3360_srom_0x81);
-#    else
-#        error Invalid value for KEYBALL_PMW3360_UPLOAD_SROM_ID. Please choose 0x04 or 0x81 or disable it.
-#    endif
-#endif
-        pmw3360_cpi_set(CPI_DEFAULT - 1);
-    }
-}
+// void pointing_device_driver_init(void) {
+// #if KEYBALL_MODEL != 46
+//     keyball.this_have_ball = pmw3360_init();
+// #endif
+//     if (keyball.this_have_ball) {
+// #if defined(KEYBALL_PMW3360_UPLOAD_SROM_ID)
+// #    if KEYBALL_PMW3360_UPLOAD_SROM_ID == 0x04
+//         pmw3360_srom_upload(pmw3360_srom_0x04);
+// #    elif KEYBALL_PMW3360_UPLOAD_SROM_ID == 0x81
+//         pmw3360_srom_upload(pmw3360_srom_0x81);
+// #    else
+// #        error Invalid value for KEYBALL_PMW3360_UPLOAD_SROM_ID. Please choose 0x04 or 0x81 or disable it.
+// #    endif
+// #endif
+//         pmw3360_cpi_set(CPI_DEFAULT - 1);
+//     }
+// }
 
-uint16_t pointing_device_driver_get_cpi(void) {
-    return keyball_get_cpi();
-}
+// uint16_t pointing_device_driver_get_cpi(void) {
+//     return keyball_get_cpi();
+// }
 
-void pointing_device_driver_set_cpi(uint16_t cpi) {
-    keyball_set_cpi(cpi);
+// void pointing_device_driver_set_cpi(uint16_t cpi) {
+//     keyball_set_cpi(cpi);
+// }
+
+void pointing_device_init_kb(void) {
+    // keyball_set_cpi(keyball_get_cpi());
+    pointing_device_init_user();
 }
 
 __attribute__((weak)) void keyball_on_apply_motion_to_mouse_move(keyball_motion_t *m, report_mouse_t *r, bool is_left) {
@@ -267,13 +274,13 @@ static inline bool should_report(void) {
 report_mouse_t pointing_device_driver_get_report(report_mouse_t rep) {
     // fetch from optical sensor.
     if (keyball.this_have_ball) {
-        pmw3360_motion_t d = {0};
-        if (pmw3360_motion_burst(&d)) {
-            ATOMIC_BLOCK_FORCEON {
-                keyball.this_motion.x = add16(keyball.this_motion.x, d.x);
-                keyball.this_motion.y = add16(keyball.this_motion.y, d.y);
-            }
-        }
+        // pmw3360_motion_t d = {0};
+        // if (pmw3360_motion_burst(&d)) {
+        //     ATOMIC_BLOCK_FORCEON {
+        //         keyball.this_motion.x = add16(keyball.this_motion.x, d.x);
+        //         keyball.this_motion.y = add16(keyball.this_motion.y, d.y);
+        //     }
+        // }
     }
     // report mouse event, if keyboard is primary.
     if (is_keyboard_master() && should_report()) {
@@ -558,7 +565,7 @@ void keyball_set_cpi(uint8_t cpi) {
     keyball.cpi_value   = cpi;
     keyball.cpi_changed = true;
     if (keyball.this_have_ball) {
-        pmw3360_cpi_set(cpi == 0 ? CPI_DEFAULT - 1 : cpi - 1);
+        pmw33xx_set_cpi(0, (cpi == 0 ? CPI_DEFAULT : cpi) * 100);
     }
 }
 
@@ -608,6 +615,7 @@ void housekeeping_task_kb(void) {
 static void pressing_keys_update(uint16_t keycode, keyrecord_t *record) {
     // Process only valid keycodes.
     if (keycode >= 4 && keycode < 57) {
+        #ifdef OLED_ENABLE
         char value = pgm_read_byte(code_to_name + keycode - 4);
         char where = BL;
         if (!record->event.pressed) {
@@ -622,6 +630,7 @@ static void pressing_keys_update(uint16_t keycode, keyrecord_t *record) {
                 break;
             }
         }
+        #endif
     }
 }
 
