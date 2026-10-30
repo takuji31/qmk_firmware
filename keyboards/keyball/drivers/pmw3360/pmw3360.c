@@ -145,7 +145,7 @@ bool pmw3360_motion_burst(pmw3360_motion_t *d) {
 
 bool pmw3360_init(void) {
     spi_init();
-    setPinOutput(PMW3360_NCS_PIN);
+    gpio_set_pin_output(PMW3360_NCS_PIN);
     // reboot
     //
     // 注意: ここで pmw3360_spi_start() を呼んではいけない。
