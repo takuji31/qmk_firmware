@@ -30,6 +30,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // Split parameters
 #define SOFT_SERIAL_PIN         D2
 #define SPLIT_HAND_MATRIX_GRID  F7, D4
+// 左手判定ジャンパー（物理的な左手の基板に付ける）で交差点が短絡した基板を「左」と判定する
+// （2026-10-20、v0.5.0）。QMK 2024年の仕様変更#22775で既定が「短絡=右」に変わり、v0.4.x以前は
+// 物理的な左右と逆に判定されていた。保存済みキーマップはkb_row_order_migrate()で自動移行する。
 #define SPLIT_HAND_MATRIX_GRID_LOW_IS_LEFT
 #define SPLIT_USB_DETECT
 #ifdef OLED_ENABLE
@@ -41,13 +44,21 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // it has been reported to work well in such cases.
 //#define SPLIT_WATCHDOG_ENABLE
 
-#define SPLIT_TRANSACTION_IDS_KB KEYBALL_GET_INFO, KEYBALL_GET_MOTION, KEYBALL_SET_CPI
+#define SPLIT_TRANSACTION_IDS_KB KEYBALL_GET_INFO, KEYBALL_GET_MOTION, KEYBALL_SET_CPI, KEYBALL_GESTURE_WAVE
+
+// トラックボールセンサー(PMW3360)用SPI。
+// このボード(QMK_PM2040コンバーター)のデフォルトも同じB1/B2/B3だが、
+// 本基板の配線(Pro Micro互換ピン配置)に依存していることを明示するため
+// あえて明記しておく（Keyball39 RP2040版と同じ）。
+#define SPI_SCK_PIN          B1
+#define SPI_MOSI_PIN         B2
+#define SPI_MISO_PIN         B3
 
 // RGB LED settings
 #define WS2812_DI_PIN       D3
 #ifdef RGBLIGHT_ENABLE
-#    define RGBLIGHT_LED_COUNT 60
-#    define RGBLED_SPLIT    { 30, 30 }  // (30 + 29)
+#    define RGBLIGHT_LED_COUNT  60
+#    define RGBLED_SPLIT        { 30, 30 }  // (30 + 29)
 #    ifndef RGBLIGHT_LIMIT_VAL
 #        define RGBLIGHT_LIMIT_VAL  150 // limitated for power consumption
 #    endif
@@ -62,7 +73,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #    endif
 #endif
 #ifdef RGB_MATRIX_ENABLE
-#    define RGB_MATRIX_SPLIT    { 30, 30 }
+#    define RGB_MATRIX_LED_COUNT 59
+#    define RGB_MATRIX_SPLIT    { 29, 30 }  // ボール搭載側29 + 非搭載側30
 #endif
 
 #ifndef OLED_FONT_H

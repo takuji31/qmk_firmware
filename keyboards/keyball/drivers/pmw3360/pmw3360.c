@@ -18,13 +18,27 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "quantum.h"
 #include "pmw3360.h"
 
-// Include SROM definitions.
-#include "srom_0x04.c"
-#include "srom_0x81.c"
+// Include SROM definitions only when upload is needed.
+// Without KEYBALL_PMW3360_UPLOAD_SROM_ID defined, no SROM is uploaded
+// and these ~8KB of data are excluded from flash.
+#if defined(KEYBALL_PMW3360_UPLOAD_SROM_ID)
+#    if KEYBALL_PMW3360_UPLOAD_SROM_ID == 0x04
+#        include "srom_0x04.c"
+#    elif KEYBALL_PMW3360_UPLOAD_SROM_ID == 0x81
+#        include "srom_0x81.c"
+#    endif
+#endif
 
 #define PMW3360_SPI_MODE 3
-#define PMW3360_SPI_DIVISOR (F_CPU / PMW3360_CLOCKS)
 #define PMW3360_CLOCKS 2000000
+#if !defined(PMW3360_SPI_DIVISOR)
+#    ifdef __AVR__
+#        define PMW3360_SPI_DIVISOR (F_CPU / PMW3360_CLOCKS)
+#    else
+// ChibiOS(ARM)系はF_CPUが無いため、QMK公式pmw33xx_commonドライバと同じ既定値を使う
+#        define PMW3360_SPI_DIVISOR 64
+#    endif
+#endif
 
 static bool motion_bursting = false;
 
@@ -131,9 +145,17 @@ bool pmw3360_motion_burst(pmw3360_motion_t *d) {
 
 bool pmw3360_init(void) {
     spi_init();
-    gpio_set_pin_output(PMW3360_NCS_PIN);
+    setPinOutput(PMW3360_NCS_PIN);
     // reboot
-    pmw3360_spi_start();
+    //
+    // 注意: ここで pmw3360_spi_start() を呼んではいけない。
+    // pmw3360_reg_write()/pmw3360_reg_read() は呼び出しごとに自前で
+    // spi_start()/spi_stop() のペアを完結させるため、ここで先にバスを
+    // 開始すると二重にロックを取ろうとする形になる。AVR版のspi_start()は
+    // レジスタ設定を再実行するだけなので実害がなかったが、ChibiOS(RP2040)版の
+    // spi_start()はOSの排他ロック(ミューテックス)を取得するため、
+    // 既に自分が保持しているロックをもう一度取ろうとして無限に待ち続け、
+    // メインループ全体が止まってしまう(実機で確認済み)。
     pmw3360_reg_write(pmw3360_Power_Up_Reset, 0x5a);
     wait_ms(50);
     // read five registers of motion and discard those values
@@ -147,7 +169,6 @@ bool pmw3360_init(void) {
     // check product ID and revision ID
     uint8_t pid = pmw3360_reg_read(pmw3360_Product_ID);
     uint8_t rev = pmw3360_reg_read(pmw3360_Revision_ID);
-    spi_stop();
     return pid == 0x42 && rev == 0x01;
 }
 
