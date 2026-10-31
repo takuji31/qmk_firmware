@@ -1,15 +1,19 @@
-# MCU name
+# MCU name（下のCONVERT_TOで上書きされるが、参考として残す）
 MCU = atmega32u4
 
-# Bootloader selection
+# Bootloader selection（下のCONVERT_TOで上書きされる）
 BOOTLOADER = caterina
+
+# SparkFun Pro Micro RP2040へ変換してビルドする
+# MCU/BOOTLOADER/SPIピン等はQMKのコンバーター定義（sparkfun_pm2040）が自動的に上書きする
+CONVERT_TO = sparkfun_pm2040
 
 # Link Time Optimization required for size.
 LTO_ENABLE = yes
 
 # Build Options
 BOOTMAGIC_ENABLE = no       # Enable Bootmagic Lite
-EXTRAKEY_ENABLE = no        # Audio control and System control
+EXTRAKEY_ENABLE = yes       # Audio control and System control
 CONSOLE_ENABLE = no         # Console for debug
 COMMAND_ENABLE = no         # Commands for debug and configuration
 NKRO_ENABLE = no            # Enable N-Key Rollover

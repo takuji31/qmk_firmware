@@ -17,8 +17,13 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 #include "quantum.h"
+#include "i2c_master.h"
 
 #if defined(OLED_ENABLE) && !defined(OLEDKIT_DISABLE)
+
+#    ifndef OLED_DISPLAY_ADDRESS
+#        define OLED_DISPLAY_ADDRESS 0x3C
+#    endif
 
 __attribute__((weak)) void oledkit_render_logo_user(void) {
     // Require `OLED_FONT_H "keyboards/keyball/lib/logofont/logofont.c"`
@@ -36,16 +41,150 @@ __attribute__((weak)) void oledkit_render_info_user(void) {
     oledkit_render_logo_user();
 }
 
+// ── 起動演出（2026-10-09、本人希望）──
+// 起動直後は消灯して待ち、左右がつながったら、スレーブ側で四方からドットが集まって
+// Keyballのロゴになる（マスター側はその瞬間からいつもの情報表示）。その後スレーブも
+// いつものロゴ表示に戻る。段階と経過時間は
+// keyball.c（LEDモードの同期で左右そろう）が上書きするこの関数で受け取る。
+// 0=待機（消灯） 1=演出中（elapsed_msに経過ms） 2=終了（いつもの表示）。
+__attribute__((weak)) uint8_t oledkit_boot_phase(uint16_t *elapsed_ms) {
+    (void)elapsed_ms;
+    return 2;
+}
+
+// ロゴの点はOLEDの文字データ（logofont.cのfont[]、0x80〜0xAFの48文字=16×3文字分）から
+// 直接読む。1文字は横6ドット×縦8ドットで、1バイトが縦8ドット（下位ビットが上）。
+extern const unsigned char font[];
+#    define BOOT_LOGO_W 96
+#    define BOOT_LOGO_H 24
+static bool boot_logo_pixel(uint8_t x, uint8_t y) {
+    uint8_t ch = (uint8_t)(0x80 + (y / 8) * 16 + x / OLED_FONT_WIDTH);
+    uint8_t b  = pgm_read_byte(&font[(uint16_t)(ch - OLED_FONT_START) * OLED_FONT_WIDTH + x % OLED_FONT_WIDTH]);
+    return (b >> (y % 8)) & 1;
+}
+
+static void render_boot_anim(uint16_t t) {
+    const uint16_t TRAVEL_MS = 550;  // 1つの点が端からロゴの位置まで動く時間
+    const uint16_t DELAY_MAX = 350;  // 点ごとに動き出しをずらす最大幅（約0.9秒で全部そろう）
+    // ロゴの最終位置。いつものロゴ表示（左余白2文字=12ドット）と同じ位置にして、
+    // 演出が終わった後のロゴ表示へそのまま自然につながるようにする（演出はスレーブのみ）。
+    const int16_t X0 = 12;
+    const int16_t Y0 = 0;
+
+    oled_clear();
+    for (uint8_t y = 0; y < BOOT_LOGO_H; y++) {
+        for (uint8_t x = 0; x < BOOT_LOGO_W; x++) {
+            if (!boot_logo_pixel(x, y)) continue;
+            // 点ごとに決まった「出発位置（上下左右の画面外のどこか）」と「出発の遅れ」
+            uint32_t h = ((uint32_t)y * BOOT_LOGO_W + x + 1) * 2654435761u;
+            h ^= h >> 15;
+            int16_t sx, sy;
+            switch (h & 3) {
+                case 0: sx = (int16_t)((h >> 3) % 128); sy = -4; break;   // 上から
+                case 1: sx = (int16_t)((h >> 3) % 128); sy = 35; break;   // 下から
+                case 2: sx = -4; sy = (int16_t)((h >> 3) % 32); break;    // 左から
+                default: sx = 131; sy = (int16_t)((h >> 3) % 32); break;  // 右から
+            }
+            uint16_t delay = (uint16_t)((h >> 12) % DELAY_MAX);
+            int32_t  p     = (t <= delay) ? 0 : (int32_t)(t - delay) * 1024 / TRAVEL_MS;  // 進み具合（1024=到着）
+            if (p > 1024) p = 1024;
+            // 最後はゆっくり止まる（ease-out）: e = 1 - (1-p)^3
+            int32_t q  = 1024 - p;
+            int32_t e  = 1024 - (q * q / 1024) * q / 1024;
+            int16_t px = (int16_t)(sx + (int32_t)(X0 + x - sx) * e / 1024);
+            int16_t py = (int16_t)(sy + (int32_t)(Y0 + y - sy) * e / 1024);
+            if (px >= 0 && px < 128 && py >= 0 && py < 32) oled_write_pixel((uint8_t)px, (uint8_t)py, true);
+        }
+    }
+}
+
+// 起動演出のロゴから、いつもの表示（設定したアニメーション・ロゴ）へ切り替わる時の溶け込み
+// （2026-10-22、本人希望「パラパラと入れ替わる」約0.5秒）。keyball.cが上書きして、溶け込み中は
+// trueと経過時間を返す。OLEDは白黒で濃淡を出せないため、4×4の決まった順番（ベイヤー配列）で
+// 画面の点を少しずつ「演出のロゴの点」から「いつもの表示の点」へ入れ替える。
+__attribute__((weak)) bool oledkit_boot_fade(uint16_t *elapsed_ms, uint16_t *total_ms) {
+    (void)elapsed_ms;
+    (void)total_ms;
+    return false;
+}
+
+// 演出の最後のロゴ（左余白12ドット・上3段）の、画面の列xと段pageの1バイト分（縦8ドット）
+static uint8_t boot_logo_byte(uint8_t x, uint8_t page) {
+    if (page >= BOOT_LOGO_H / 8 || x < 12 || x >= 12 + BOOT_LOGO_W) return 0;
+    uint8_t lx = x - 12;
+    uint8_t ch = (uint8_t)(0x80 + page * 16 + lx / OLED_FONT_WIDTH);
+    return pgm_read_byte(&font[(uint16_t)(ch - OLED_FONT_START) * OLED_FONT_WIDTH + lx % OLED_FONT_WIDTH]);
+}
+
+// いつもの表示を描いた後に呼ぶ。まだ入れ替わっていない点を演出のロゴの点で上書きする。
+static void boot_fade_overlay(uint16_t elapsed, uint16_t total) {
+    static const uint8_t BAYER[4][4] = {{0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5}};
+    uint8_t              level       = (uint8_t)((uint32_t)elapsed * 17 / total);  // 0〜16。この数より小さい点は入れ替え済み
+    uint8_t              mask[4];  // 列x%4ごとの「まだロゴのままの点」（縦8ドット分）
+    for (uint8_t c = 0; c < 4; c++) {
+        mask[c] = 0;
+        for (uint8_t k = 0; k < 8; k++) {
+            if (BAYER[k & 3][c] >= level) mask[c] |= (uint8_t)(1 << k);
+        }
+    }
+    for (uint8_t page = 0; page < OLED_DISPLAY_HEIGHT / 8; page++) {
+        for (uint8_t x = 0; x < OLED_DISPLAY_WIDTH; x++) {
+            uint16_t i   = (uint16_t)page * OLED_DISPLAY_WIDTH + x;
+            uint8_t  cur = *oled_read_raw(i).current_element;
+            uint8_t  m   = mask[x & 3];
+            uint8_t  v   = (uint8_t)((cur & ~m) | (boot_logo_byte(x, page) & m));
+            if (v != cur) oled_write_raw_byte((char)v, i);
+        }
+    }
+}
+
 __attribute__((weak)) bool oled_task_user(void) {
+    static uint8_t last_phase = 0xFF;
+    uint16_t       elapsed    = 0;
+    uint8_t        phase      = oledkit_boot_phase(&elapsed);
+    if (phase != last_phase) {
+        oled_clear();  // 段階が変わった瞬間に一度だけ全消去（演出の点が残らないように）
+        last_phase = phase;
+    }
+    if (phase == 0) return true;  // 待機中は消灯のまま
+    // ロゴの演出はスレーブ側だけ（本人指定）。マスターは演出の開始と同時にいつもの情報表示を始める。
+    if (phase == 1 && !is_keyboard_master()) {
+        render_boot_anim(elapsed);
+        return true;
+    }
     if (is_keyboard_master()) {
         oledkit_render_info_user();
     } else {
         oledkit_render_logo_user();
+        uint16_t fe, ft;
+        if (oledkit_boot_fade(&fe, &ft)) boot_fade_overlay(fe, ft);
     }
     return true;
 }
 
+// 電源を入れた直後、OLEDのメモリには電源投入時のでたらめな内容が残っている。QMKの
+// oled_init()は初期化の最後に画面を点灯させるが、最初の描画（トラックボールの初期化などの
+// 後）まではそのでたらめな内容が映ってしまっていた（本人報告「ジャミングのようなもの」、
+// 2026-10-09）。oled_init()の中で画面の点灯より前に呼ばれるこの関数で、メモリを全て0で
+// 埋めておく（SSD1306のメモリ128×64ドット分=1024バイト。表示は上半分だけだが念のため全部）。
+static void oled_clear_ram_before_display_on(void) {
+    i2c_init();  // oled_driver_init()より前なので自分で初期化する（二重に呼んでも問題ない）
+    static const uint8_t setup[] = {
+        0x00,              // 以下コマンド
+        0xAE,              // 表示オフ（電源投入直後は元々オフ）
+        0x20, 0x00,        // 水平アドレッシング
+        0x21, 0x00, 0x7F,  // 列 0-127
+        0x22, 0x00, 0x07,  // ページ 0-7
+    };
+    if (i2c_transmit((OLED_DISPLAY_ADDRESS << 1), setup, sizeof(setup), 100) != I2C_STATUS_SUCCESS) return;
+    static const uint8_t zeros[128] = {0};
+    for (uint8_t i = 0; i < 8; i++) {
+        i2c_write_register((OLED_DISPLAY_ADDRESS << 1), 0x40, zeros, sizeof(zeros), 100);
+    }
+}
+
 __attribute__((weak)) oled_rotation_t oled_init_user(oled_rotation_t rotation) {
+    oled_clear_ram_before_display_on();
     // Logo needs to be rotated 180 degrees.
     //
     // A typical OLED has a narrow margin on the left side near the origin, and

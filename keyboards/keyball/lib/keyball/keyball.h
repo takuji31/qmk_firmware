@@ -28,6 +28,11 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #    define KEYBALL_SCROLL_DIV_DEFAULT 4 // 4: 1/8 (1/2^(n-1))
 #endif
 
+// スクロール量の全体基準（大きいほど全段階が遅くなる）。1=従来通り。
+#ifndef KEYBALL_SCROLL_DIV_BASE
+#    define KEYBALL_SCROLL_DIV_BASE 1
+#endif
+
 #ifndef KEYBALL_REPORTMOUSE_INTERVAL
 #    define KEYBALL_REPORTMOUSE_INTERVAL 8 // mouse report rate: 125Hz
 #endif
@@ -69,7 +74,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // Constants
 
 #define KEYBALL_TX_GETINFO_INTERVAL 500
-#define KEYBALL_TX_GETINFO_MAXTRY 10
 #define KEYBALL_TX_GETMOTION_INTERVAL 4
 
 #if (PRODUCT_ID & 0xff00) == 0x0000
@@ -82,6 +86,18 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #    define KEYBALL_MODEL 147
 #elif (PRODUCT_ID & 0xff00) == 0x0400
 #    define KEYBALL_MODEL 44
+#elif (PRODUCT_ID & 0xff00) == 0x0600
+// keyball-rp2040-firmware（Keyball39 RP2040版）。基板形状はKeyball39と同一のため39として扱う。
+#    define KEYBALL_MODEL 39
+#elif (PRODUCT_ID & 0xff00) == 0x0700
+// keyball-rp2040-firmware（Keyball+ RP2040版）。基板形状はAVR版Keyball+と同一のため139として扱う。
+#    define KEYBALL_MODEL 139
+#elif (PRODUCT_ID & 0xff00) == 0x0800
+// keyball-rp2040-firmware（Keyball44 RP2040版）。基板形状はAVR版Keyball44と同一のため44として扱う。
+#    define KEYBALL_MODEL 44
+#elif (PRODUCT_ID & 0xff00) == 0x0900
+// keyball-rp2040-firmware（Keyball61 RP2040版）。基板形状はAVR版Keyball61と同一のため61として扱う。
+#    define KEYBALL_MODEL 61
 #endif
 
 #define KEYBALL_OLED_MAX_PRESSING_KEYCODES 6
@@ -115,24 +131,62 @@ enum keyball_keycodes {
     AML_I50  = QK_KB_11, // Increment automatic mouse layer timeout
     AML_D50  = QK_KB_12, // Decrement automatic mouse layer timeout
 
+    // ジェスチャー: 押している間トラックボールを上下左右に振るとキー送出。
+    // GST_HOLD〜6はジェスチャーモード1〜6の手動切替キー（押している間だけ
+    // レイヤー連動より優先。各モードの中身はKeyball Linkのジェスチャー設定で変更）
+    GST_HOLD  = QK_KB_16,
+    GST_HOLD2 = QK_KB_19,
+    GST_HOLD3 = QK_KB_20,
+    GST_HOLD4 = QK_KB_21,
+    GST_HOLD5 = QK_KB_22,  // 2026-10-09追加（ジェスチャーモード5・6）
+    GST_HOLD6 = QK_KB_23,
+
+    // 超低速（精密作業）モード: 押している間だけCPIを下げる
+    PRC_MO   = QK_KB_17,
+
+    // タイムアウトを待たず自動マウスレイヤーを即座に解除
+    AML_OFF  = QK_KB_18,
+
     // User customizable 32 keycodes.
     KEYBALL_SAFE_RANGE = QK_USER_0,
 };
 
 typedef union {
     uint32_t raw;
+    // 2026-09-18判明・修正: 各ビットフィールドの宣言型がuint8_t中心でuint16_tが1つ
+    // 混在していたため、コンパイラが「その型のバイト境界をまたいでは詰めない」
+    // 前提で確保領域を割り当ててしまい（GCCのビットフィールドは、宣言型のサイズを
+    // 単位として、その単位の残りビット数に収まらないフィールドは次の単位の先頭から
+    // 確保する）、無駄なパディングが積み重なって構造体全体が32bit(=.rawのuint32_t)
+    // に収まらなくなっていた（実際に`sizeof(keyball_config_t) != sizeof(uint32_t)`に
+    // なっていたことを一時的な_Static_assertで実機確認済み）。結果、最後のフィールド
+    // であるmagicが.rawの4バイトの外側に飛び出し、c.magic=KEYBALL_CONFIG_MAGICと
+    // 代入しても.raw経由では常に0のまま保存される＝毎回「magic不一致」と誤判定されて
+    // 既定値へリセットされ続けるバグになっていた（本人報告「ファームウェアを書き直すと
+    // トラックボール設定がリセットされる」の根本原因）。全フィールドの宣言型をraw自体
+    // と同じuint32_tに統一し、単一の32bit確保単位内にすき間なく詰まるようにして解消した
+    // （合計ビット数は7+3+1+5+2+4+8=30bitで32bit以内に収まる）。
     struct {
-        uint8_t cpi : 7;
-        uint8_t sdiv : 3;  // scroll divider
+        uint32_t cpi : 7;
+        uint32_t sdiv : 3;  // scroll divider
 #ifdef POINTING_DEVICE_AUTO_MOUSE_ENABLE
-        uint8_t amle : 1;  // automatic mouse layer enabled
-        uint16_t amlto : 5; // automatic mouse layer timeout
+        uint32_t amle : 1;  // automatic mouse layer enabled
+        uint32_t amlto : 5; // automatic mouse layer timeout
 #endif
 #if KEYBALL_SCROLLSNAP_ENABLE == 2
-        uint8_t ssnap : 2; // scroll snap mode
+        uint32_t ssnap : 2; // scroll snap mode
 #endif
+        uint32_t accel : 4; // pointer acceleration (0=off, 1-10)
+        uint32_t magic : 8; // レイアウト検証用（kb_settings.cと同じ仕組み）。
+                            // フィールドを追加・変更したら必ず値を変える。
     };
 } keyball_config_t;
+// 上記バグの再発防止用に恒久的に残す（ビットフィールドを増やす際、型を統一し忘れて
+// また32bitをはみ出すと、ここでビルドエラーとして即座に気づける）。
+_Static_assert(sizeof(keyball_config_t) == sizeof(uint32_t), "keyball_config_t bitfield layout does not fit in 32 bits (magic byte likely landing outside .raw)");
+
+// 単純な連番ではなく偶然一致しにくい値にする（kb_settings.cのMAGIC_VALUEと同様の考え方）
+#define KEYBALL_CONFIG_MAGIC 0x5B
 
 typedef struct {
     uint8_t ballcnt; // count of balls: support only 0 or 1, for now
@@ -160,7 +214,14 @@ typedef struct {
     keyball_motion_t that_motion;
 
     uint8_t cpi_value;
-    bool    cpi_changed;
+    bool    cpi_changed;  // マスター→スレーブへCPI（とOLEDアニメの設定）を送り直す必要があるか
+
+    // OLEDのアニメーション（LEDエフェクト連動・ロゴの揺れ）を止めて、止まったロゴにするか（v0.5.2〜）。
+    // 表示するのはUSBを挿していない側なので、マスターはKEYBALL_SET_CPIに載せてスレーブへ伝える。
+    bool oled_anim_off;
+    // 起動アニメーション（LEDが中央から広がる・OLEDのロゴ）をしないか（v0.5.7〜）。決めるのはマスターだが、
+    // USBを挿す側を変えても同じになるよう、OLEDアニメと同じくKEYBALL_SET_CPIでスレーブにも保存させる。
+    bool boot_anim_off;
 
     bool     scroll_mode;
     uint32_t scroll_mode_changed;
@@ -179,6 +240,40 @@ typedef struct {
 
     // Buffer to indicate pressing keys.
     char pressing_keys[KEYBALL_OLED_MAX_PRESSING_KEYCODES + 1];
+
+#ifdef GESTURE_ENABLE
+    // ジェスチャー連動LEDウェーブ用のトリガー記録（RIPPLEと同じ固定スロット方式）。
+    // 両ハーフで同時に光らせるため、マスター側はkeyball_gesture_wave_trigger()で
+    // ローカルに記録すると同時に一方向RPC(KEYBALL_GESTURE_WAVE)でスレーブにも伝える。
+    // rgb_matrix_user.incのGESTURE_WAVEエフェクトが読み取り専用で参照する。
+#define KEYBALL_GESTURE_WAVE_SLOT_COUNT 6
+    uint16_t gesture_wave_start[KEYBALL_GESTURE_WAVE_SLOT_COUNT];
+    uint8_t  gesture_wave_dir[KEYBALL_GESTURE_WAVE_SLOT_COUNT];  // 0=上 1=下 2=左 3=右
+    bool     gesture_wave_active[KEYBALL_GESTURE_WAVE_SLOT_COUNT];
+    // ウェーブの速さ（kb_gesture_wave_speed_getと同じ0-255）。2026-09-09発覚:
+    // 分割両ハーフはそれぞれ自分のEEPROMを持っており、Web UIのSET系コマンドは
+    // USB接続中の片方（＝マスター）にしか届かないため、kb_gesture_wave_speed_get()を
+    // スレーブ側でそのまま呼ぶとマスターと異なる（未設定/古い）値を読んでしまい、
+    // ウェーブの速さが片方のハーフだけ違って見える不具合になっていた。そのため
+    // 発火のたびにマスターが読んだ実際の値をこのフィールドへ書き込み、
+    // KEYBALL_GESTURE_WAVE RPCの一部としてスレーブにも配って共有する
+    // （rgb_matrix_user.incはkb_gesture_wave_speed_get()を直接呼ばず、これを読む）。
+    uint8_t gesture_wave_speed;
+    // ウェーブの見た目(KB_GESTURE_WAVE_STYLE_SHARP/BREATH)。2026-09-30〜、速さ・色と
+    // 同じ理由（モードごとにEEPROM値が違う上、分割両ハーフはそれぞれ別のEEPROMを持つ）
+    // でここに解決済みの値を保持する。以前は単一設定だったためkb_gesture_wave_style_get()
+    // を直接呼んでいたが、モードごとの配列になったため呼び出しにはmodeが要る。発火元
+    // （keyball_gesture_wave_trigger）はmodeを知っているのでここで解決してから配る。
+    uint8_t gesture_wave_style;
+    // ウェーブ専用の色（hue/sat/val、0-255）。速度と同じ理由（上記コメント参照）で、
+    // 発火のたびにマスターが読んだ実際の値をここへ書き込み、RPCでスレーブにも配る
+    // （2026-09-29〜。本人希望で「ジェスチャーLEDの色相・彩度・明るさも個別に
+    // 調整したい」に対応。今までは常にrgb_matrix_config.hsv＝その時点で表示中の
+    // 通常LED/レイヤー連動LEDの色をそのまま使っていた）。
+    uint8_t gesture_wave_hue;
+    uint8_t gesture_wave_sat;
+    uint8_t gesture_wave_val;
+#endif
 } keyball_t;
 
 typedef enum {
@@ -230,6 +325,95 @@ bool keyball_get_scroll_mode(void);
 /// keyball_set_scroll_mode modify scroll mode.
 void keyball_set_scroll_mode(bool mode);
 
+/// keyball_get_precision_mode gets whether ultra-slow (precision) mode is currently active.
+bool keyball_get_precision_mode(void);
+
+/// keyball_set_precision_key reflects the PRC_MO key's press/release state into precision mode.
+/// Combined with keyball_set_precision_layer via OR: precision mode is active while either
+/// source requests it, so holding the key while the precision layer is also active (or vice
+/// versa) does not prematurely restore the saved CPI.
+void keyball_set_precision_key(bool pressed);
+
+/// keyball_set_precision_layer reflects whether the configured precision-mode layer is
+/// currently the highest active layer. See keyball_set_precision_key for how the two sources
+/// combine.
+void keyball_set_precision_layer(bool on);
+
+#ifdef GESTURE_ENABLE
+/// keyball_gesture_wave_trigger records a gesture-fire event (direction: 0=up,1=down,2=left,
+/// 3=right, matching keymap.c's gesture direction encoding) for the GESTURE_WAVE LED effect,
+/// and — when called on the master — also forwards it to the slave half via a one-way split
+/// transaction so both halves animate together. Call only when a real key was actually sent
+/// by the gesture (kc != 0); an unassigned direction shouldn't trigger the effect.
+/// mode (0-3) selects which gesture mode's speed/style/color settings to use (2026-09-30〜、
+/// 本人希望でジェスチャー1〜4ごとに個別設定できるようにした際に追加)。
+void keyball_gesture_wave_trigger(uint8_t direction, uint8_t mode);
+
+#ifdef RGB_MATRIX_ENABLE
+// gesture_wave_active[]のいずれかが発火中かどうかを見て、現在のRGB_MATRIXモードを
+// 強制的にGESTURE_WAVEへ上書き/復帰する。通常LED・レイヤー連動LEDのどちらが選ばれて
+// いても関係なく、ジェスチャー発火の瞬間だけウェーブを最優先で表示するための仕組み
+// （2026-09-09発覚: ウェーブをLED効果の選択肢の1つとして実装していた旧方式だと、
+// レイヤー連動LEDが別の効果を選んでいる間はウェーブ用のRGB_MATRIXモードに切り替わって
+// いないため描画関数自体が呼ばれず、「ジェスチャーとレイヤー連動LEDがぶつかる」問題に
+// なっていた）。両ハーフ独立に動作するため、housekeeping_task_kbから両ハーフで
+// 毎スキャン呼ぶこと。
+void keyball_gesture_wave_task(void);
+
+/// keyball_gesture_wave_overriding reports whether the gesture-wave LED effect is currently
+/// being force-displayed (overriding the normal/layer-linked LED). kb_hid.c's UG_*キー同期
+/// 処理（kb_led_config_sync_from_rgb_matrix）が、ウェーブの一時的な色をkb_led_configへ
+/// 誤って書き込まないようにするために使う。
+bool keyball_gesture_wave_overriding(void);
+
+/// keyball_gesture_wave_drawing reports whether a gesture wave is currently being shown
+/// (either as an overlay on top of the running effect, or as a full-mode override).
+bool keyball_gesture_wave_drawing(void);
+
+/// keyball_gesture_wave_overlay draws the active gesture wave over the running RGB_MATRIX
+/// effect, touching key LEDs only (underglow untouched). Defined in rgb_matrix_user.inc;
+/// call from rgb_matrix_indicators_advanced_user.
+bool keyball_gesture_wave_overlay(uint8_t led_min, uint8_t led_max);
+#endif
+#endif
+
+
+#ifdef RGBLIGHT_ENABLE
+/// keyball_seasonal_led_task renders the seasonal LED effects (Halloween/Easter crossfade)
+/// whenever the currently-effective LED config (global, or the active layer's override)
+/// selects one. It is self-contained: it independently re-derives the effective config every
+/// call from EEPROM + the local layer_state, so it works correctly on both split halves
+/// without needing a dedicated sync channel. No-op when the effective effect_id is a regular
+/// RGBLIGHT mode (rgblight_task() already handles that).
+/// RGBLIGHT-only: the RGB_MATRIX build implements Halloween/Easter as ordinary self-contained
+/// custom effects (rgb_matrix_user.inc) instead, so it doesn't need this external driver.
+/// Call every matrix_scan_user tick.
+void keyball_seasonal_led_task(void);
+#endif
+
+#if defined(RGBLIGHT_ENABLE) || defined(RGB_MATRIX_ENABLE)
+/// keyball_apply_normal_led applies the stored "normal" (layer 0) LED config to the live
+/// RGBLIGHT/RGB_MATRIX display right now (via the _noeeprom variants — kb_led_config in
+/// kb_settings is the persisted source of truth, not the backend's own eeconfig). Call at
+/// boot, and after SET_LED when no layer override is currently active.
+void keyball_apply_normal_led(void);
+
+/// keyball_apply_layer_led reflects the layer-linked LED feature for the given highest active
+/// layer: applies that layer's override live if enabled, otherwise (including when the
+/// feature itself is off) reverts to the normal LED config via keyball_apply_normal_led().
+/// Call from layer_state_set_user with get_highest_layer(state).
+void keyball_apply_layer_led(uint8_t hl);
+
+// 起動演出（左右がつながってからLED・OLEDを同時に始める）の最中か（keyball.c参照）。
+// 演出中はレイヤー連動LED・ジェスチャーウェーブ・LED設定の読み戻しがLEDモードを触らない。
+bool keyball_boot_active(void);
+
+/// keyball_layer_led_overriding reports whether a layer's LED override is currently being
+/// displayed (as opposed to the normal/layer-0 config). SET_LED uses this to decide whether
+/// changing the normal config should also change what's currently on screen.
+bool keyball_layer_led_overriding(void);
+#endif // defined(RGBLIGHT_ENABLE) || defined(RGB_MATRIX_ENABLE)
+
 /// keyball_get_scrollsnap_mode gets current scroll snap mode.
 keyball_scrollsnap_mode_t keyball_get_scrollsnap_mode(void);
 
@@ -238,6 +422,10 @@ void keyball_set_scrollsnap_mode(keyball_scrollsnap_mode_t mode);
 
 /// keyball_get_scroll_div gets current scroll divider.
 /// See also keyball_set_scroll_div for the scroll divider's detail.
+/// keyball_motion_is_left reports whether this half is physically the left hand, used only for
+/// trackball orientation. Overridden by keymaps that redefine is_keyboard_left().
+bool keyball_motion_is_left(void);
+
 uint8_t keyball_get_scroll_div(void);
 
 /// keyball_set_scroll_div changes scroll divider.
@@ -270,3 +458,17 @@ uint8_t keyball_get_cpi(void);
 /// In addition, if you do not upload SROM, the maximum value will be limited
 /// to 35 (3500CPI).
 void keyball_set_cpi(uint8_t cpi);
+
+/// OLEDのアニメーション（LEDエフェクト連動）のON/OFF。変更はEEPROMに保存し、スレーブへも送る。
+bool keyball_get_oled_anim_enabled(void);
+void keyball_set_oled_anim_enabled(bool enabled);
+
+/// 起動アニメーションのON/OFF。変更はEEPROMに保存し、スレーブへも送る（次の起動から反映）。
+bool keyball_get_boot_anim_enabled(void);
+void keyball_set_boot_anim_enabled(bool enabled);
+
+/// keyball_get_accel gets current pointer acceleration level (0=off, 1-10).
+uint8_t keyball_get_accel(void);
+
+/// keyball_set_accel sets pointer acceleration level (0=off, 1-10).
+void keyball_set_accel(uint8_t accel);
