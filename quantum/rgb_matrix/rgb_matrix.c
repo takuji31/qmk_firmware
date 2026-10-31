@@ -176,7 +176,12 @@ __attribute__((weak)) int rgb_matrix_led_index(int index) {
     return index;
 }
 
+// keyball: エフェクトが各LEDに書き込む色を、書き込む直前に加工するための差し込み口
+// （起動演出から設定したエフェクトへ溶け込むように切り替えるため。既定は何もしない）
+__attribute__((weak)) void rgb_matrix_color_filter_kb(int index, uint8_t *red, uint8_t *green, uint8_t *blue) {}
+
 void rgb_matrix_set_color(int index, uint8_t red, uint8_t green, uint8_t blue) {
+    rgb_matrix_color_filter_kb(index, &red, &green, &blue);
     const int led_index = rgb_matrix_led_index(index);
     if (led_index < 0) {
         return;
